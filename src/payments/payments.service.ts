@@ -1,13 +1,16 @@
-import { Injectable, RawBody } from '@nestjs/common'
-import { envs } from 'src/config'
+import { Inject, Injectable, Logger, RawBody } from '@nestjs/common'
+import { envs, NATS_SERVICE } from 'src/config'
 import Stripe from 'stripe'
 import { PaymentsSessionDto } from './dto/payment-session.dto'
 import { Request, Response } from 'express'
+import { ClientProxy } from '@nestjs/microservices'
 
 @Injectable()
 export class PaymentsService {
   private readonly stripe = new Stripe(envs.stripeSecret)
+  private readonly logger = new Logger('PaymentsService')
 
+  constructor(@Inject(NATS_SERVICE) private readonly client: ClientProxy) {}
   async createPaymentSession(paymentsSessionDto: PaymentsSessionDto) {
     const { currency, items, orderId } = paymentsSessionDto
 
@@ -37,7 +40,12 @@ export class PaymentsService {
       cancel_url: envs.stripeCancelUrl,
     })
 
-    return session
+    // return session
+    return {
+      cancelUrl: session.cancel_url,
+      successUrl: session.success_url,
+      url: session.url,
+    }
   }
 
   async stripeWebhook(req: Request, res: Response) {
@@ -61,10 +69,15 @@ export class PaymentsService {
     switch (event.type) {
       case 'charge.succeeded':
         const chargeSuccessed = event.data.object
-        console.log({
-          metadata: chargeSuccessed.metadata,
+        const payload = {
+          stripePaymentId: chargeSuccessed.id,
           orderId: chargeSuccessed.metadata.orderId,
-        })
+          receiptUrl: chargeSuccessed.receipt_url,
+        }
+        // this.logger.log({ payload })
+
+        // "emit" ejecuta pero no espera respuesta
+        this.client.emit('payment.succeeded', payload)
         break
       default:
         // Unexpected event type
